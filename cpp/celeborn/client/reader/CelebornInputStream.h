@@ -17,8 +17,6 @@
 
 #pragma once
 
-#include <thread>
-
 #include "celeborn/client/compress/Decompressor.h"
 #include "celeborn/client/reader/WorkerPartitionReader.h"
 #include "celeborn/conf/CelebornConf.h"

@@ -213,8 +213,8 @@ std::shared_ptr<PartitionReader> CelebornInputStream::createReaderWithRetry(
       VLOG(1) << "Create reader for location " << currentLocation->host << ":"
               << currentLocation->fetchPort;
       if (isExcluded(*currentLocation)) {
-        throw std::runtime_error(
-            "Fetch data from excluded worker! " +
+        CELEBORN_FAIL(
+            "Fetch data from excluded worker! {}",
             currentLocation->hostAndFetchPort());
       }
       auto reader = createReader(*currentLocation);
@@ -226,8 +226,7 @@ std::shared_ptr<PartitionReader> CelebornInputStream::createReaderWithRetry(
 
       if (currentLocation->hasPeer() && !readSkewPartitionWithoutMapRange_) {
         if (fetchChunkRetryCnt_ % 2 == 0) {
-          std::this_thread::sleep_for(
-              std::chrono::milliseconds(retryWait_.count()));
+          std::this_thread::sleep_for(retryWait_);
         }
         LOG(WARNING) << "CreatePartitionReader failed " << fetchChunkRetryCnt_
                      << "/" << fetchChunkMaxRetry_ << " times for location "
@@ -244,8 +243,7 @@ std::shared_ptr<PartitionReader> CelebornInputStream::createReaderWithRetry(
                      << "/" << fetchChunkMaxRetry_ << " times for location "
                      << currentLocation->hostAndFetchPort()
                      << ", retry the same location. Error: " << e.what();
-        std::this_thread::sleep_for(
-            std::chrono::milliseconds(retryWait_.count()));
+        std::this_thread::sleep_for(retryWait_);
       }
     }
   }
