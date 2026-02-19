@@ -136,7 +136,9 @@ bool CelebornInputStream::moveToNextChunk() {
 
   if (currReader_->hasNext()) {
     currChunk_ = getNextChunk();
-    return true;
+    if (currChunk_) {
+      return true;
+    }
   }
   if (currLocationIndex_ < locations_.size()) {
     moveToNextReader();
@@ -148,11 +150,61 @@ bool CelebornInputStream::moveToNextChunk() {
 
 std::unique_ptr<memory::ReadOnlyByteBuffer>
 CelebornInputStream::getNextChunk() {
-  // TODO: support the failure retrying, including excluding the failed
-  // location, open a reader to read from the location's peer.
-  auto chunk = currReader_->next();
-  verifyChunk(chunk);
-  return std::move(chunk);
+  while (fetchChunkRetryCnt_ < fetchChunkMaxRetry_) {
+    try {
+      if (isExcluded(currReader_->getLocation())) {
+        CELEBORN_FAIL(
+            "Fetch data from excluded worker! {}",
+            currReader_->getLocation().hostAndFetchPort());
+      }
+      if (!currReader_->hasNext()) {
+        return nullptr;
+      }
+      auto chunk = currReader_->next();
+      verifyChunk(chunk);
+      return chunk;
+    } catch (const std::exception& e) {
+      excludeFailedFetchLocation(
+          currReader_->getLocation().hostAndFetchPort(), e);
+      fetchChunkRetryCnt_++;
+      auto failedLocation = currReader_->getLocation();
+      currReader_ = nullptr;
+
+      if (fetchChunkRetryCnt_ == fetchChunkMaxRetry_) {
+        LOG(WARNING) << "Fetch chunk fail exceeds max retry "
+                     << fetchChunkRetryCnt_ << ". Error: " << e.what();
+        throw utils::CelebornRuntimeError(
+            std::current_exception(),
+            "Fetch chunk failed for " + std::to_string(fetchChunkRetryCnt_) +
+                " times for location " + failedLocation.hostAndFetchPort(),
+            false);
+      }
+
+      if (failedLocation.hasPeer() && !readSkewPartitionWithoutMapRange_) {
+        LOG(WARNING) << "Fetch chunk failed " << fetchChunkRetryCnt_ << "/"
+                     << fetchChunkMaxRetry_ << " times for location "
+                     << failedLocation.hostAndFetchPort()
+                     << ", change to peer. Error: " << e.what();
+        // fetchChunkRetryCnt_ % 2 == 0 means both replicas have been tried,
+        // so sleep before next try.
+        if (fetchChunkRetryCnt_ % 2 == 0) {
+          std::this_thread::sleep_for(retryWait_);
+        }
+        currReader_ = createReaderWithRetry(*failedLocation.getPeer());
+      } else {
+        LOG(WARNING) << "Fetch chunk failed " << fetchChunkRetryCnt_ << "/"
+                     << fetchChunkMaxRetry_ << " times for location "
+                     << failedLocation.hostAndFetchPort()
+                     << ". Error: " << e.what();
+        std::this_thread::sleep_for(retryWait_);
+        // TODO: Pass checkpoint metadata when supported to skip
+        // already-read chunks, improving retry performance.
+        currReader_ = createReaderWithRetry(failedLocation);
+      }
+    }
+  }
+
+  CELEBORN_FAIL("Fetch chunk failed!");
 }
 
 void CelebornInputStream::verifyChunk(
@@ -182,7 +234,9 @@ void CelebornInputStream::moveToNextReader() {
   currLocationIndex_++;
   if (currReader_->hasNext()) {
     currChunk_ = getNextChunk();
-    return;
+    if (currChunk_) {
+      return;
+    }
   }
   moveToNextReader();
 }
