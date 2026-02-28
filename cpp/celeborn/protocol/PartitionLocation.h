@@ -19,6 +19,8 @@
 
 #include <memory>
 
+#include <roaring/roaring.hh>
+
 #include "celeborn/proto/TransportMessagesCpp.pb.h"
 #include "celeborn/utils/Exceptions.h"
 
@@ -76,8 +78,7 @@ struct PartitionLocation {
   // The lifecycle of Replica is bounded with Primary.
   std::unique_ptr<PartitionLocation> replicaPeer{nullptr};
   std::unique_ptr<StorageInfo> storageInfo;
-  // TODO: RoaringBitmap is not supported yet.
-  // RoaringBitmap mapIdBitMap;
+  std::shared_ptr<roaring::Roaring> mapIdBitMap;
 
   static std::unique_ptr<const PartitionLocation> fromPb(
       const PbPartitionLocation& pb);

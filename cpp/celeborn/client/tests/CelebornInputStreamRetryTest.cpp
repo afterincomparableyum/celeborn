@@ -18,6 +18,8 @@
 #include <gtest/gtest.h>
 #include <system_error>
 
+#include <roaring/roaring.hh>
+
 #include "celeborn/client/ShuffleClient.h"
 #include "celeborn/client/reader/CelebornInputStream.h"
 #include "celeborn/conf/CelebornConf.h"
@@ -652,4 +654,234 @@ TEST(CelebornInputStreamRetryTest, fetchChunkRetryNoPeerRetriesSameLocation) {
     EXPECT_EQ(host, "solo-host");
   }
   EXPECT_EQ(factory->hosts().size(), 2u);
+}
+
+// skipLocation tests
+// These tests verify that locations whose mapIdBitMap does not contain any
+// mapIds in [startMapIndex, endMapIndex) are skipped.
+
+std::shared_ptr<PartitionLocation> makeLocationWithBitmap(
+    const std::string& host,
+    const std::vector<uint32_t>& mapIds) {
+  auto location = std::make_shared<PartitionLocation>();
+  location->id = 0;
+  location->epoch = 0;
+  location->host = host;
+  location->pushPort = 1001;
+  location->fetchPort = 1002;
+  location->replicatePort = 1003;
+  location->mode = PartitionLocation::PRIMARY;
+  location->storageInfo = std::make_unique<StorageInfo>();
+  location->storageInfo->type = StorageInfo::HDD;
+  if (!mapIds.empty()) {
+    auto bitmap = std::make_shared<roaring::Roaring>();
+    for (auto id : mapIds) {
+      bitmap->add(id);
+    }
+    location->mapIdBitMap = bitmap;
+  }
+  return location;
+}
+
+std::shared_ptr<CelebornConf> makeTestConfWithRangeFilter() {
+  auto conf = std::make_shared<CelebornConf>();
+  conf->registerProperty(CelebornConf::kNetworkIoRetryWait, "1ms");
+  conf->registerProperty(
+      CelebornConf::kClientFetchMaxRetriesForEachReplica, "2");
+  conf->registerProperty(CelebornConf::kClientPushReplicateEnabled, "false");
+  conf->registerProperty(CelebornConf::kShuffleRangeReadFilterEnabled, "true");
+  return conf;
+}
+
+// Verifies that when rangeReadFilter is enabled, locations whose bitmap
+// does not intersect [startMapIndex, endMapIndex) are skipped entirely.
+TEST(CelebornInputStreamRetryTest, skipLocationFiltersByBitmap) {
+  auto mockClient = std::make_shared<SequencedMockTransportClient>();
+  const std::string payload = "data";
+  mockClient->addFetchSuccess(makeChunkBuffer(3, 0, 0, payload));
+
+  auto factory = std::make_shared<SequencedMockClientFactory>(mockClient);
+  auto conf = makeTestConfWithRangeFilter();
+  auto excludedWorkers =
+      std::make_shared<CelebornInputStream::FetchExcludedWorkers>();
+  StubShuffleClient shuffleClient(conf, excludedWorkers);
+
+  // Location 1: bitmap {0, 1, 2} - should be SKIPPED for range [3, 5)
+  // Location 2: bitmap {3, 4} - should be READ for range [3, 5)
+  std::vector<std::shared_ptr<const PartitionLocation>> locations;
+  locations.push_back(makeLocationWithBitmap("skip-host", {0, 1, 2}));
+  locations.push_back(makeLocationWithBitmap("read-host", {3, 4}));
+  std::vector<int> attempts = {0, 0, 0, 0, 0};
+
+  CelebornInputStream stream(
+      "test-shuffle-key",
+      conf,
+      factory,
+      std::move(locations),
+      attempts,
+      0,
+      3, // startMapIndex
+      5, // endMapIndex
+      false,
+      excludedWorkers,
+      &shuffleClient);
+
+  std::vector<uint8_t> buffer(payload.size());
+  int bytesRead = stream.read(buffer.data(), 0, payload.size());
+  EXPECT_EQ(bytesRead, payload.size());
+
+  // Only "read-host" should have been contacted; "skip-host" was skipped.
+  auto& hosts = factory->hosts();
+  ASSERT_EQ(hosts.size(), 1u);
+  EXPECT_EQ(hosts[0], "read-host");
+}
+
+// Verifies that when rangeReadFilter is disabled, no locations are skipped.
+TEST(CelebornInputStreamRetryTest, skipLocationDisabledReadsAll) {
+  auto mockClient = std::make_shared<SequencedMockTransportClient>();
+  const std::string payload = "data";
+  // First location will be read (not skipped) and return data.
+  mockClient->addFetchSuccess(makeChunkBuffer(0, 0, 0, payload));
+
+  auto factory = std::make_shared<SequencedMockClientFactory>(mockClient);
+  auto conf = std::make_shared<CelebornConf>();
+  conf->registerProperty(CelebornConf::kNetworkIoRetryWait, "1ms");
+  conf->registerProperty(
+      CelebornConf::kClientFetchMaxRetriesForEachReplica, "2");
+  conf->registerProperty(CelebornConf::kClientPushReplicateEnabled, "false");
+  // rangeReadFilter defaults to false
+  auto excludedWorkers =
+      std::make_shared<CelebornInputStream::FetchExcludedWorkers>();
+  StubShuffleClient shuffleClient(conf, excludedWorkers);
+
+  // Location with bitmap {0, 1, 2} - would be skipped for range [3, 5)
+  // if filter were enabled, but filter is disabled.
+  std::vector<std::shared_ptr<const PartitionLocation>> locations;
+  locations.push_back(makeLocationWithBitmap("host1", {0, 1, 2}));
+  std::vector<int> attempts = {0, 0, 0};
+
+  CelebornInputStream stream(
+      "test-shuffle-key",
+      conf,
+      factory,
+      std::move(locations),
+      attempts,
+      0,
+      3,
+      5,
+      false,
+      excludedWorkers,
+      &shuffleClient);
+
+  // host1 should have been contacted (not skipped) since filter is disabled.
+  auto& hosts = factory->hosts();
+  ASSERT_EQ(hosts.size(), 1u);
+  EXPECT_EQ(hosts[0], "host1");
+}
+
+// Verifies that locations without a bitmap are not skipped.
+TEST(CelebornInputStreamRetryTest, skipLocationNullBitmapNotSkipped) {
+  auto mockClient = std::make_shared<SequencedMockTransportClient>();
+  const std::string payload = "data";
+  mockClient->addFetchSuccess(makeChunkBuffer(0, 0, 0, payload));
+
+  auto factory = std::make_shared<SequencedMockClientFactory>(mockClient);
+  auto conf = makeTestConfWithRangeFilter();
+  auto excludedWorkers =
+      std::make_shared<CelebornInputStream::FetchExcludedWorkers>();
+  StubShuffleClient shuffleClient(conf, excludedWorkers);
+
+  // Location with no bitmap - should NOT be skipped even with filter enabled.
+  std::vector<std::shared_ptr<const PartitionLocation>> locations;
+  locations.push_back(makeLocationWithBitmap("host1", {}));
+  std::vector<int> attempts = {0};
+
+  CelebornInputStream stream(
+      "test-shuffle-key",
+      conf,
+      factory,
+      std::move(locations),
+      attempts,
+      0,
+      3,
+      5,
+      false,
+      excludedWorkers,
+      &shuffleClient);
+
+  auto& hosts = factory->hosts();
+  ASSERT_EQ(hosts.size(), 1u);
+  EXPECT_EQ(hosts[0], "host1");
+}
+
+// Verifies that all locations are skipped when none have relevant mapIds,
+// resulting in read() returning -1.
+TEST(CelebornInputStreamRetryTest, skipLocationAllSkippedReturnsEof) {
+  auto mockClient = std::make_shared<SequencedMockTransportClient>();
+  auto factory = std::make_shared<SequencedMockClientFactory>(mockClient);
+  auto conf = makeTestConfWithRangeFilter();
+  auto excludedWorkers =
+      std::make_shared<CelebornInputStream::FetchExcludedWorkers>();
+  StubShuffleClient shuffleClient(conf, excludedWorkers);
+
+  // All locations have bitmaps that don't intersect [10, 20).
+  std::vector<std::shared_ptr<const PartitionLocation>> locations;
+  locations.push_back(makeLocationWithBitmap("host1", {0, 1, 2}));
+  locations.push_back(makeLocationWithBitmap("host2", {5, 6, 7}));
+  std::vector<int> attempts = {0, 0, 0, 0, 0, 0, 0, 0};
+
+  CelebornInputStream stream(
+      "test-shuffle-key",
+      conf,
+      factory,
+      std::move(locations),
+      attempts,
+      0,
+      10, // startMapIndex
+      20, // endMapIndex
+      false,
+      excludedWorkers,
+      &shuffleClient);
+
+  // No hosts should have been contacted.
+  EXPECT_EQ(factory->hosts().size(), 0u);
+
+  // read() should return -1 (EOF).
+  std::vector<uint8_t> buffer(10);
+  EXPECT_EQ(stream.read(buffer.data(), 0, 10), -1);
+}
+
+// Verifies that endMapIndex == INT_MAX disables skipLocation.
+TEST(CelebornInputStreamRetryTest, skipLocationIntMaxEndMapIndexNotSkipped) {
+  auto mockClient = std::make_shared<SequencedMockTransportClient>();
+  const std::string payload = "data";
+  mockClient->addFetchSuccess(makeChunkBuffer(0, 0, 0, payload));
+
+  auto factory = std::make_shared<SequencedMockClientFactory>(mockClient);
+  auto conf = makeTestConfWithRangeFilter();
+  auto excludedWorkers =
+      std::make_shared<CelebornInputStream::FetchExcludedWorkers>();
+  StubShuffleClient shuffleClient(conf, excludedWorkers);
+
+  // Location with bitmap {0, 1, 2}. With endMapIndex=INT_MAX, should NOT skip.
+  std::vector<std::shared_ptr<const PartitionLocation>> locations;
+  locations.push_back(makeLocationWithBitmap("host1", {0, 1, 2}));
+  std::vector<int> attempts = {0, 0, 0};
+
+  CelebornInputStream stream(
+      "test-shuffle-key",
+      conf,
+      factory,
+      std::move(locations),
+      attempts,
+      0,
+      100,     // startMapIndex
+      INT_MAX, // endMapIndex - disables range filtering
+      false,
+      excludedWorkers,
+      &shuffleClient);
+
+  auto& hosts = factory->hosts();
+  ASSERT_EQ(hosts.size(), 1u);
+  EXPECT_EQ(hosts[0], "host1");
 }

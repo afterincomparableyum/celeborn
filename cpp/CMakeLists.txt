@@ -135,6 +135,30 @@ set(LZ4_WITH_DEPENDENCIES
         xxhash
 )
 
+# Try to find a pre-installed CRoaring first; if not present, build it via
+# FetchContent so the build works even without running setup-ubuntu.sh.
+find_package(CRoaring QUIET)
+if(CRoaring_FOUND)
+    set(CROARING_LIBS ${CROARING_LIBRARY})
+    include_directories(SYSTEM ${CROARING_INCLUDE_DIR})
+else()
+    message(STATUS "CRoaring not found locally, fetching from source")
+    include(FetchContent)
+    FetchContent_Declare(
+            CRoaring
+            GIT_REPOSITORY https://github.com/RoaringBitmap/CRoaring.git
+            GIT_TAG v4.1.7
+            GIT_SHALLOW ON)
+    set(ROARING_BUILD_LTO OFF CACHE BOOL "" FORCE)
+    set(ENABLE_ROARING_TESTS OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(CRoaring)
+    set(CROARING_LIBS roaring)
+    # FetchContent sets croaring_SOURCE_DIR; expose the headers globally so
+    # that PartitionLocation.h can be included by any target without each one
+    # needing to link against roaring explicitly.
+    include_directories(SYSTEM ${croaring_SOURCE_DIR}/include)
+endif()
+
 find_library(RE2 re2)
 
 find_package(fizz CONFIG REQUIRED)

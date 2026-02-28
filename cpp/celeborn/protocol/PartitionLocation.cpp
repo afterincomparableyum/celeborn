@@ -23,6 +23,33 @@
 
 namespace celeborn {
 namespace protocol {
+namespace {
+// Deserialize a RoaringBitmap from bytes using the portable serialization
+// format, which is compatible with Java's RoaringBitmap.serialize(ByteBuffer).
+std::shared_ptr<roaring::Roaring> deserializeRoaringBitmap(
+    const std::string& bytes) {
+  if (bytes.empty()) {
+    return nullptr;
+  }
+  auto bitmap = std::make_shared<roaring::Roaring>(
+      roaring::Roaring::readSafe(bytes.data(), bytes.size()));
+  return bitmap;
+}
+
+// Serialize a RoaringBitmap to bytes using the portable serialization format,
+// which is compatible with Java's RoaringBitmap.deserialize(ByteBuffer).
+std::string serializeRoaringBitmap(
+    const std::shared_ptr<roaring::Roaring>& bitmap) {
+  if (!bitmap || bitmap->isEmpty()) {
+    return {};
+  }
+  size_t size = bitmap->portableSizeInBytes();
+  std::string bytes(size, '\0');
+  bitmap->portableSerialize(&bytes[0]);
+  return bytes;
+}
+} // namespace
+
 std::unique_ptr<StorageInfo> StorageInfo::fromPb(const PbStorageInfo& pb) {
   auto result = std::make_unique<StorageInfo>();
   result->type = static_cast<Type>(pb.type());
@@ -89,6 +116,9 @@ std::unique_ptr<PartitionLocation> PartitionLocation::fromPackedPb(
   result->storageInfo->finalResult = pb.finalresult(idx);
   result->storageInfo->filePath = filePath;
   result->storageInfo->availableStorageTypes = pb.availablestoragetypes(idx);
+  if (idx < pb.mapidbitmap_size()) {
+    result->mapIdBitMap = deserializeRoaringBitmap(pb.mapidbitmap(idx));
+  }
 
   return std::move(result);
 }
@@ -106,7 +136,8 @@ PartitionLocation::PartitionLocation(const PartitionLocation& other)
           other.replicaPeer
               ? std::make_unique<PartitionLocation>(*other.replicaPeer)
               : nullptr),
-      storageInfo(std::make_unique<StorageInfo>(*other.storageInfo)) {}
+      storageInfo(std::make_unique<StorageInfo>(*other.storageInfo)),
+      mapIdBitMap(other.mapIdBitMap) {}
 
 std::unique_ptr<PbPartitionLocation> PartitionLocation::toPb() const {
   auto pbPartitionLocation = toPbWithoutPeer();
@@ -130,6 +161,7 @@ std::unique_ptr<PartitionLocation> PartitionLocation::fromPbWithoutPeer(
   result->mode = static_cast<Mode>(pb.mode());
   result->replicaPeer = nullptr;
   result->storageInfo = StorageInfo::fromPb(pb.storageinfo());
+  result->mapIdBitMap = deserializeRoaringBitmap(pb.mapidbitmap());
   return std::move(result);
 }
 
@@ -145,6 +177,10 @@ std::unique_ptr<PbPartitionLocation> PartitionLocation::toPbWithoutPeer()
   pbPartitionLocation->set_replicateport(replicatePort);
   pbPartitionLocation->set_mode(static_cast<PbPartitionLocation_Mode>(mode));
   pbPartitionLocation->set_allocated_storageinfo(storageInfo->toPb().release());
+  auto bitmapBytes = serializeRoaringBitmap(mapIdBitMap);
+  if (!bitmapBytes.empty()) {
+    pbPartitionLocation->set_mapidbitmap(std::move(bitmapBytes));
+  }
   return pbPartitionLocation;
 }
 

@@ -148,6 +148,9 @@ class CelebornConf : public BaseConf {
       kClientAdaptiveOptimizeSkewedPartitionReadEnabled{
           "celeborn.client.adaptive.optimizeSkewedPartitionRead.enabled"};
 
+  static constexpr std::string_view kShuffleRangeReadFilterEnabled{
+      "celeborn.client.shuffle.rangeReadFilter.enabled"};
+
   CelebornConf();
 
   CelebornConf(const std::string& filename);
@@ -227,6 +230,8 @@ class CelebornConf : public BaseConf {
   Timeout clientFetchExcludedWorkerExpireTimeout() const;
 
   bool clientAdaptiveOptimizeSkewedPartitionReadEnabled() const;
+
+  bool shuffleRangeReadFilterEnabled() const;
 };
 } // namespace conf
 } // namespace celeborn

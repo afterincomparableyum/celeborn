@@ -17,6 +17,8 @@
 
 #include <gtest/gtest.h>
 
+#include <roaring/roaring.hh>
+
 #include "celeborn/proto/TransportMessagesCpp.pb.h"
 #include "celeborn/protocol/PartitionLocation.h"
 
@@ -244,4 +246,123 @@ TEST(PartitionLocationTest, hostAndFetchPort) {
 
   std::string expected = "test_host:1003";
   EXPECT_EQ(partitionLocation->hostAndFetchPort(), expected);
+}
+
+TEST(PartitionLocationTest, fromPbWithMapIdBitmap) {
+  auto pbPartitionLocation = generateBasicPartitionLocationPb();
+  pbPartitionLocation->set_mode(PbPartitionLocation_Mode_Primary);
+  auto pbStorageInfo = generateStorageInfoPb();
+  pbPartitionLocation->set_allocated_storageinfo(pbStorageInfo.release());
+
+  // Create a roaring bitmap, serialize it in portable format, set on the proto.
+  roaring::Roaring bitmap;
+  bitmap.add(1);
+  bitmap.add(3);
+  bitmap.add(5);
+  bitmap.add(100);
+  size_t size = bitmap.portableSizeInBytes();
+  std::string bytes(size, '\0');
+  bitmap.portableSerialize(&bytes[0]);
+  pbPartitionLocation->set_mapidbitmap(bytes);
+
+  auto partitionLocation = PartitionLocation::fromPb(*pbPartitionLocation);
+
+  verifyBasicPartitionLocation(partitionLocation.get());
+  ASSERT_NE(partitionLocation->mapIdBitMap, nullptr);
+  EXPECT_TRUE(partitionLocation->mapIdBitMap->contains(1));
+  EXPECT_TRUE(partitionLocation->mapIdBitMap->contains(3));
+  EXPECT_TRUE(partitionLocation->mapIdBitMap->contains(5));
+  EXPECT_TRUE(partitionLocation->mapIdBitMap->contains(100));
+  EXPECT_FALSE(partitionLocation->mapIdBitMap->contains(2));
+  EXPECT_FALSE(partitionLocation->mapIdBitMap->contains(4));
+  EXPECT_FALSE(partitionLocation->mapIdBitMap->contains(99));
+}
+
+TEST(PartitionLocationTest, fromPbWithEmptyMapIdBitmap) {
+  auto pbPartitionLocation = generateBasicPartitionLocationPb();
+  pbPartitionLocation->set_mode(PbPartitionLocation_Mode_Primary);
+  auto pbStorageInfo = generateStorageInfoPb();
+  pbPartitionLocation->set_allocated_storageinfo(pbStorageInfo.release());
+  // Don't set mapIdBitmap - it should be empty by default.
+
+  auto partitionLocation = PartitionLocation::fromPb(*pbPartitionLocation);
+
+  EXPECT_EQ(partitionLocation->mapIdBitMap, nullptr);
+}
+
+TEST(PartitionLocationTest, toPbWithMapIdBitmap) {
+  auto partitionLocation = generateBasicPartitionLocation();
+  partitionLocation->mode = PartitionLocation::PRIMARY;
+  partitionLocation->storageInfo = generateStorageInfo();
+
+  auto bitmap = std::make_shared<roaring::Roaring>();
+  bitmap->add(2);
+  bitmap->add(4);
+  bitmap->add(6);
+  partitionLocation->mapIdBitMap = bitmap;
+
+  auto pbPartitionLocation = partitionLocation->toPb();
+
+  // Verify bitmap was serialized.
+  const auto& bitmapBytes = pbPartitionLocation->mapidbitmap();
+  ASSERT_FALSE(bitmapBytes.empty());
+
+  // Deserialize and verify contents.
+  roaring::Roaring deserialized =
+      roaring::Roaring::readSafe(bitmapBytes.data(), bitmapBytes.size());
+  EXPECT_TRUE(deserialized.contains(2));
+  EXPECT_TRUE(deserialized.contains(4));
+  EXPECT_TRUE(deserialized.contains(6));
+  EXPECT_FALSE(deserialized.contains(1));
+}
+
+TEST(PartitionLocationTest, toPbWithNullBitmap) {
+  auto partitionLocation = generateBasicPartitionLocation();
+  partitionLocation->mode = PartitionLocation::PRIMARY;
+  partitionLocation->storageInfo = generateStorageInfo();
+  partitionLocation->mapIdBitMap = nullptr;
+
+  auto pbPartitionLocation = partitionLocation->toPb();
+
+  EXPECT_TRUE(pbPartitionLocation->mapidbitmap().empty());
+}
+
+TEST(PartitionLocationTest, bitmapRoundTrip) {
+  auto partitionLocation = generateBasicPartitionLocation();
+  partitionLocation->mode = PartitionLocation::PRIMARY;
+  partitionLocation->storageInfo = generateStorageInfo();
+
+  auto bitmap = std::make_shared<roaring::Roaring>();
+  for (int i = 0; i < 1000; i += 3) {
+    bitmap->add(i);
+  }
+  partitionLocation->mapIdBitMap = bitmap;
+
+  // Serialize to protobuf.
+  auto pb = partitionLocation->toPb();
+
+  // Deserialize from protobuf.
+  auto restored = PartitionLocation::fromPb(*pb);
+
+  ASSERT_NE(restored->mapIdBitMap, nullptr);
+  EXPECT_EQ(*restored->mapIdBitMap, *partitionLocation->mapIdBitMap);
+}
+
+TEST(PartitionLocationTest, copyConstructorWithBitmap) {
+  auto partitionLocation = generateBasicPartitionLocation();
+  partitionLocation->mode = PartitionLocation::PRIMARY;
+  partitionLocation->storageInfo = generateStorageInfo();
+
+  auto bitmap = std::make_shared<roaring::Roaring>();
+  bitmap->add(10);
+  bitmap->add(20);
+  partitionLocation->mapIdBitMap = bitmap;
+
+  // Copy.
+  PartitionLocation copy(*partitionLocation);
+
+  // Verify copy has the same bitmap (shared_ptr, so same object).
+  ASSERT_NE(copy.mapIdBitMap, nullptr);
+  EXPECT_TRUE(copy.mapIdBitMap->contains(10));
+  EXPECT_TRUE(copy.mapIdBitMap->contains(20));
 }

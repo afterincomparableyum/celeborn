@@ -172,6 +172,7 @@ CelebornConf::defaultProperties() {
           BOOL_PROP(kClientFetchExcludeWorkerOnFailureEnabled, false),
           STR_PROP(kClientFetchExcludedWorkerExpireTimeout, "60s"),
           BOOL_PROP(kClientAdaptiveOptimizeSkewedPartitionReadEnabled, false),
+          BOOL_PROP(kShuffleRangeReadFilterEnabled, false),
       };
   return defaultProp;
 }
@@ -382,6 +383,11 @@ bool CelebornConf::clientAdaptiveOptimizeSkewedPartitionReadEnabled() const {
   return folly::to<bool>(
       optionalProperty(kClientAdaptiveOptimizeSkewedPartitionReadEnabled)
           .value());
+}
+
+bool CelebornConf::shuffleRangeReadFilterEnabled() const {
+  return folly::to<bool>(
+      optionalProperty(kShuffleRangeReadFilterEnabled).value());
 }
 } // namespace conf
 } // namespace celeborn

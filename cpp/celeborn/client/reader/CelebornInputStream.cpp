@@ -66,6 +66,7 @@ CelebornInputStream::CelebornInputStream(
       readSkewPartitionWithoutMapRange_(
           conf_->clientAdaptiveOptimizeSkewedPartitionReadEnabled() &&
           startMapIndex > endMapIndex),
+      rangeReadFilter_(conf_->shuffleRangeReadFilterEnabled()),
       shuffleClient_(shuffleClient) {
   if (shouldDecompress_) {
     decompressor_ = compress::Decompressor::createDecompressor(
@@ -344,15 +345,39 @@ std::shared_ptr<PartitionReader> CelebornInputStream::createReader(
   }
 }
 
+bool CelebornInputStream::skipLocation(
+    const protocol::PartitionLocation& location) {
+  if (!rangeReadFilter_) {
+    return false;
+  }
+  if (endMapIndex_ == INT_MAX) {
+    return false;
+  }
+  auto bitmap = location.mapIdBitMap;
+  if (!bitmap && location.hasPeer()) {
+    bitmap = location.getPeer()->mapIdBitMap;
+  }
+  if (!bitmap) {
+    return false;
+  }
+  for (int i = startMapIndex_; i < endMapIndex_; i++) {
+    if (bitmap->contains(static_cast<uint32_t>(i))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 std::shared_ptr<const protocol::PartitionLocation>
 CelebornInputStream::nextReadableLocation() {
-  if (currLocationIndex_ >= locations_.size()) {
-    return nullptr;
+  while (currLocationIndex_ < locations_.size()) {
+    auto& location = locations_[currLocationIndex_];
+    if (!skipLocation(*location)) {
+      return location;
+    }
+    currLocationIndex_++;
   }
-  return locations_[currLocationIndex_];
-  // TODO: support skipLocation functionality...
-  // TODO: the currLocationIndex_ management is a mess. might be
-  // managed all within this function?
+  return nullptr;
 }
 
 std::unordered_set<int>& CelebornInputStream::getBatchRecord(int mapId) {

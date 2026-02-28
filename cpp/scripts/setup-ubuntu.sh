@@ -182,6 +182,11 @@ function install_wangle {
   cmake_install_dir wangle/wangle -DBUILD_TESTS=OFF
 }
 
+function install_croaring {
+  wget_and_untar https://github.com/RoaringBitmap/CRoaring/archive/refs/tags/v4.1.7.tar.gz croaring
+  cmake_install_dir croaring -DROARING_BUILD_LTO=OFF -DENABLE_ROARING_TESTS=OFF
+}
+
 function install_celeborn_cpp_deps {
   run_and_time install_celeborn_cpp_deps_from_apt
   run_and_time install_fmt
@@ -190,6 +195,7 @@ function install_celeborn_cpp_deps {
   run_and_time install_folly
   run_and_time install_fizz
   run_and_time install_wangle
+  run_and_time install_croaring
 }
 
 function install_apt_deps {

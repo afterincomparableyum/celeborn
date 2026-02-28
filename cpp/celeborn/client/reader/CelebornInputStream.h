@@ -65,6 +65,8 @@ class CelebornInputStream {
 
   bool isExcluded(const protocol::PartitionLocation& location);
 
+  bool skipLocation(const protocol::PartitionLocation& location);
+
   std::shared_ptr<const protocol::PartitionLocation> nextReadableLocation();
 
   std::unordered_set<int>& getBatchRecord(int mapId);
@@ -97,6 +99,7 @@ class CelebornInputStream {
   std::shared_ptr<FetchExcludedWorkers> fetchExcludedWorkers_;
   int64_t fetchExcludedWorkerExpireTimeoutMs_;
   bool readSkewPartitionWithoutMapRange_;
+  bool rangeReadFilter_;
   ShuffleClient* shuffleClient_;
 };
 } // namespace client
