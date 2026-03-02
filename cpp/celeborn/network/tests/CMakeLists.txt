@@ -19,7 +19,8 @@ add_executable(
         MessageTest.cpp
         MessageDispatcherTest.cpp
         TransportClientTest.cpp
-        NettyRpcEndpointRefTest.cpp)
+        NettyRpcEndpointRefTest.cpp
+        PushMergedDataMessageTest.cpp)
 
 add_test(NAME celeborn_network_test COMMAND celeborn_network_test)
 

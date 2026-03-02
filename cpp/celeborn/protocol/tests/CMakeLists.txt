@@ -18,7 +18,8 @@ add_executable(
         PartitionLocationTest.cpp
         TransportMessageTest.cpp
         ControlMessagesTest.cpp
-        EncodersTest.cpp)
+        EncodersTest.cpp
+        EncodersArrayTest.cpp)
 
 add_test(NAME celeborn_protocol_test COMMAND celeborn_protocol_test)
 

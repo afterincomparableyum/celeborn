@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include <vector>
+
 #include "celeborn/memory/ByteBuffer.h"
 
 namespace celeborn {
@@ -27,6 +29,16 @@ int encodedLength(const std::string& msg);
 void encode(memory::WriteOnlyByteBuffer& buffer, const std::string& msg);
 
 std::string decode(memory::ReadOnlyByteBuffer& buffer);
+
+int encodedLength(const std::vector<std::string>& arr);
+
+void encode(
+    memory::WriteOnlyByteBuffer& buffer,
+    const std::vector<std::string>& arr);
+
+int encodedLength(const std::vector<int>& arr);
+
+void encode(memory::WriteOnlyByteBuffer& buffer, const std::vector<int>& arr);
 
 } // namespace protocol
 } // namespace celeborn

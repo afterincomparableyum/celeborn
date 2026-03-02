@@ -33,5 +33,33 @@ std::string decode(memory::ReadOnlyByteBuffer& buffer) {
   int size = buffer.read<int>();
   return buffer.readToString(size);
 }
+
+int encodedLength(const std::vector<std::string>& arr) {
+  int length = sizeof(int); // count
+  for (const auto& s : arr) {
+    length += encodedLength(s);
+  }
+  return length;
+}
+
+void encode(
+    memory::WriteOnlyByteBuffer& buffer,
+    const std::vector<std::string>& arr) {
+  buffer.write<int>(arr.size());
+  for (const auto& s : arr) {
+    encode(buffer, s);
+  }
+}
+
+int encodedLength(const std::vector<int>& arr) {
+  return sizeof(int) + sizeof(int) * arr.size();
+}
+
+void encode(memory::WriteOnlyByteBuffer& buffer, const std::vector<int>& arr) {
+  buffer.write<int>(arr.size());
+  for (int val : arr) {
+    buffer.write<int>(val);
+  }
+}
 } // namespace protocol
 } // namespace celeborn

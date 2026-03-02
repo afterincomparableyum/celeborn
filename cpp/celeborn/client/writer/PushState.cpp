@@ -242,5 +242,73 @@ void PushState::throwIfExceptionExists() {
   }
 }
 
+void DataBatches::addDataBatch(
+    std::shared_ptr<const protocol::PartitionLocation> loc,
+    int batchId,
+    std::unique_ptr<memory::ReadOnlyByteBuffer> body) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  totalSize_ += static_cast<int>(body->remainingSize());
+  DataBatch batch;
+  batch.loc = std::move(loc);
+  batch.batchId = batchId;
+  batch.body = std::move(body);
+  batches_.push_back(std::move(batch));
+}
+
+std::vector<DataBatch> DataBatches::requireBatches() {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::vector<DataBatch> result;
+  result.swap(batches_);
+  totalSize_ = 0;
+  return result;
+}
+
+std::vector<DataBatch> DataBatches::requireBatches(int requestSize) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  std::vector<DataBatch> result;
+  int currentSize = 0;
+  auto it = batches_.begin();
+  while (it != batches_.end() && currentSize < requestSize) {
+    currentSize += static_cast<int>(it->body->remainingSize());
+    result.push_back(std::move(*it));
+    it = batches_.erase(it);
+  }
+  totalSize_ -= currentSize;
+  return result;
+}
+
+int DataBatches::getTotalSize() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return totalSize_;
+}
+
+bool PushState::addBatchData(
+    const AddressPair& addressPair,
+    std::shared_ptr<const protocol::PartitionLocation> loc,
+    int batchId,
+    std::unique_ptr<memory::ReadOnlyByteBuffer> body,
+    int pushBufferMaxSize) {
+  int bodySize = static_cast<int>(body->remainingSize());
+  auto dataBatches = batchesMap_.computeIfAbsent(
+      addressPair, []() { return std::make_shared<DataBatches>(); });
+  dataBatches->addDataBatch(std::move(loc), batchId, std::move(body));
+  return dataBatches->getTotalSize() >= pushBufferMaxSize;
+}
+
+std::shared_ptr<DataBatches> PushState::takeDataBatches(
+    const AddressPair& addressPair) {
+  auto result = batchesMap_.erase(addressPair);
+  if (result.has_value()) {
+    return result.value();
+  }
+  return nullptr;
+}
+
+void PushState::forEachBatchEntry(
+    const std::function<
+        void(const AddressPair&, std::shared_ptr<DataBatches>)>& fn) {
+  batchesMap_.forEach(fn);
+}
+
 } // namespace client
 } // namespace celeborn

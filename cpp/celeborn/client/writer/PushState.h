@@ -19,15 +19,42 @@
 
 #include <atomic>
 #include <optional>
+#include <utility>
 
 #include "celeborn/client/writer/PushStrategy.h"
 #include "celeborn/conf/CelebornConf.h"
+#include "celeborn/protocol/PartitionLocation.h"
 #include "celeborn/utils/CelebornUtils.h"
 
 namespace celeborn {
 namespace client {
 
 class PushStrategy;
+
+struct DataBatch {
+  std::shared_ptr<const protocol::PartitionLocation> loc;
+  int batchId;
+  std::unique_ptr<memory::ReadOnlyByteBuffer> body;
+};
+
+class DataBatches {
+ public:
+  void addDataBatch(
+      std::shared_ptr<const protocol::PartitionLocation> loc,
+      int batchId,
+      std::unique_ptr<memory::ReadOnlyByteBuffer> body);
+
+  std::vector<DataBatch> requireBatches();
+
+  std::vector<DataBatch> requireBatches(int requestSize);
+
+  int getTotalSize() const;
+
+ private:
+  mutable std::mutex mutex_;
+  int totalSize_{0};
+  std::vector<DataBatch> batches_;
+};
 
 /// Records the states of a mapKey, including the ongoing package number id, the
 /// exception, etc. Besides, the congestionControl is also enforced.
@@ -69,6 +96,23 @@ class PushState {
 
   void cleanup();
 
+  using AddressPair = std::pair<std::string, std::string>;
+
+  // Returns true if the total size of the DataBatches for the given
+  // addressPair exceeds pushBufferMaxSize.
+  bool addBatchData(
+      const AddressPair& addressPair,
+      std::shared_ptr<const protocol::PartitionLocation> loc,
+      int batchId,
+      std::unique_ptr<memory::ReadOnlyByteBuffer> body,
+      int pushBufferMaxSize);
+
+  std::shared_ptr<DataBatches> takeDataBatches(const AddressPair& addressPair);
+
+  // Iterates all entries in batchesMap_ and calls the given function.
+  void forEachBatchEntry(
+      const std::function<void(const AddressPair&, std::shared_ptr<DataBatches>)>& fn);
+
  private:
   void throwIfExceptionExists();
 
@@ -91,6 +135,19 @@ class PushState {
   utils::ConcurrentHashMap<int, int> inflightBatchBytesSizes_;
   folly::Synchronized<std::unique_ptr<std::exception>> exception_;
   std::atomic<bool> cleaned_{false};
+
+  struct AddressPairHasher {
+    size_t operator()(const AddressPair& p) const {
+      size_t h1 = std::hash<std::string>{}(p.first);
+      size_t h2 = std::hash<std::string>{}(p.second);
+      return h1 ^ (h2 << 1);
+    }
+  };
+  utils::ConcurrentHashMap<
+      AddressPair,
+      std::shared_ptr<DataBatches>,
+      AddressPairHasher>
+      batchesMap_;
 };
 
 } // namespace client

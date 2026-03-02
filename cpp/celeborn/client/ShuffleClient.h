@@ -21,6 +21,7 @@
 #include "celeborn/client/compress/Compressor.h"
 #include "celeborn/client/reader/CelebornInputStream.h"
 #include "celeborn/client/writer/PushDataCallback.h"
+#include "celeborn/client/writer/PushMergedDataCallback.h"
 #include "celeborn/client/writer/PushState.h"
 #include "celeborn/client/writer/ReviveManager.h"
 #include "celeborn/network/NettyRpcEndpointRef.h"
@@ -45,7 +46,21 @@ class ShuffleClient {
       int numMappers,
       int numPartitions) = 0;
 
-  // TODO: PushMergedData is not supported yet.
+  virtual int mergeData(
+      int shuffleId,
+      int mapId,
+      int attemptId,
+      int partitionId,
+      const uint8_t* data,
+      size_t offset,
+      size_t length,
+      int numMappers,
+      int numPartitions) = 0;
+
+  virtual void pushMergedData(
+      int shuffleId,
+      int mapId,
+      int attemptId) = 0;
 
   virtual void
   mapperEnd(int shuffleId, int mapId, int attemptId, int numMappers) = 0;
@@ -107,6 +122,7 @@ class ShuffleClientImpl
  public:
   friend class ReviveManager;
   friend class PushDataCallback;
+  friend class PushMergedDataCallback;
 
   using PtrReviveRequest = std::shared_ptr<protocol::ReviveRequest>;
   using PartitionLocationMap = utils::ConcurrentHashMap<
@@ -141,6 +157,22 @@ class ShuffleClientImpl
       size_t length,
       int numMappers,
       int numPartitions) override;
+
+  int mergeData(
+      int shuffleId,
+      int mapId,
+      int attemptId,
+      int partitionId,
+      const uint8_t* data,
+      size_t offset,
+      size_t length,
+      int numMappers,
+      int numPartitions) override;
+
+  void pushMergedData(
+      int shuffleId,
+      int mapId,
+      int attemptId) override;
 
   void mapperEnd(int shuffleId, int mapId, int attemptId, int numMappers)
       override;
@@ -197,6 +229,20 @@ class ShuffleClientImpl
       int remainReviveTimes,
       long dueTimeMs);
 
+  virtual void submitRetryPushMergedData(
+      int shuffleId,
+      int mapId,
+      int attemptId,
+      int numMappers,
+      int numPartitions,
+      int groupedBatchId,
+      std::vector<DataBatch> batches,
+      std::shared_ptr<PushState> pushState,
+      const std::vector<std::shared_ptr<protocol::ReviveRequest>>&
+          reviveRequests,
+      int remainReviveTimes,
+      long dueTimeMs);
+
   virtual bool mapperEnded(int shuffleId, int mapId);
 
   virtual void addRequestToReviveManager(
@@ -215,6 +261,17 @@ class ShuffleClientImpl
       mapperEndSets();
 
   virtual void addPushDataRetryTask(folly::Func&& task);
+
+  void doPushMergedData(
+      const PushState::AddressPair& addressPair,
+      int shuffleId,
+      int mapId,
+      int attemptId,
+      int numMappers,
+      int numPartitions,
+      std::vector<DataBatch> batches,
+      std::shared_ptr<PushState> pushState,
+      int remainReviveTimes);
 
  private:
   std::shared_ptr<PushState> getPushState(const std::string& mapKey);
