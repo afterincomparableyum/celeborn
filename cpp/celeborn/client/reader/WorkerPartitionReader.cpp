@@ -17,6 +17,8 @@
 
 #include "celeborn/client/reader/WorkerPartitionReader.h"
 
+#include <folly/executors/GlobalExecutor.h>
+
 namespace celeborn {
 namespace client {
 std::shared_ptr<WorkerPartitionReader> WorkerPartitionReader::create(
@@ -112,6 +114,12 @@ void WorkerPartitionReader::fetchChunks() {
 
 void WorkerPartitionReader::initAndCheck() {
   if (!onSuccess_) {
+    // The callback can be invoked on the TransportClient's IO thread. If the
+    // shared_this captured here happens to hold the last reference, dropping
+    // it inline runs ~WorkerPartitionReader (and transitively ~TransportClient
+    // and ~IOThreadPoolExecutor) on the executor's own thread, which then
+    // pthread_joins itself and aborts with EDEADLK. Hand the last ref off to
+    // the global CPU executor so destruction happens on a different thread.
     onSuccess_ = [weak_this = weak_from_this()](
                      protocol::StreamChunkSlice streamChunkSlice,
                      std::unique_ptr<memory::ReadOnlyByteBuffer> chunk) {
@@ -122,6 +130,8 @@ void WorkerPartitionReader::initAndCheck() {
       shared_this->chunkQueue_.enqueue(std::move(chunk));
       VLOG(1) << "WorkerPartitionReader::onSuccess: "
               << streamChunkSlice.toString();
+      folly::getGlobalCPUExecutor()->add(
+          [s = std::move(shared_this)]() mutable { s.reset(); });
     };
 
     onFailure_ = [weak_this = weak_from_this()](
@@ -138,6 +148,8 @@ void WorkerPartitionReader::initAndCheck() {
         auto exp = shared_this->exception_.wlock();
         *exp = std::move(exception);
       }
+      folly::getGlobalCPUExecutor()->add(
+          [s = std::move(shared_this)]() mutable { s.reset(); });
     };
   }
 
